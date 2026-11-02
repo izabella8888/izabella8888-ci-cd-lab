@@ -1,0 +1,93 @@
+name: Pipeline
+
+on:
+  push:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          docker build -t ci-cd-lab:test .
+
+      - name: Start test container
+        run: |
+          docker run -d -p 8080:80 --name ci-cd-test ci-cd-lab:test
+
+      - name: Validate HTML
+        id: html_lint
+        continue-on-error: true
+        run: |
+          npx --yes html-validate index.html
+
+      - name: Smoke test container
+        if: always()
+        run: |
+          echo "Checking website inside container..."
+          curl -fsS http://localhost:8080 -o page.html
+
+          echo "Searching for student name..."
+          grep -q "Ушанова Елизавета Кирилловна" page.html
+          result=$?
+
+          echo "grep exit code: $result"
+
+          if [ "$result" -eq 0 ]; then
+            echo "OK"
+          else
+            echo "Smoke test failed"
+            exit 1
+          fi
+
+      - name: Check HTML validation result
+        if: always()
+        run: |
+          if [ "${{ steps.html_lint.outcome }}" != "success" ]; then
+            echo "HTML validation failed"
+            exit 1
+          fi
+
+      - name: Stop test container
+        if: always()
+        run: |
+          docker stop ci-cd-test || true
+          docker rm ci-cd-test || true
+
+  release:
+    name: release
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/izabella8888/izabella8888-ci-cd-lab:latest
+            ghcr.io/izabella8888/izabella8888-ci-cd-lab:${{ github.sha }}
